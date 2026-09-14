@@ -4,9 +4,9 @@
   "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
   "author": "JÜNGERKÜHN",
   "description": {
-    "": "Fits a linked vise to CAM stock with deep setup-frame validation and sets Fusion Part Position."
+    "": "Fits a linked vise to CAM stock with assembly-context joint driving and deep frame validation."
   },
-  "version": "0.9.0",
+  "version": "0.10.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
