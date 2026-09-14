@@ -4,9 +4,9 @@
   "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
   "author": "JÜNGERKÜHN",
   "description": {
-    "": "Places a linked vise from Fusion Manufacture setup stock."
+    "": "Positions CAM stock in a fixed machine-mounted vise."
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
