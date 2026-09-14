@@ -6,7 +6,7 @@
   "description": {
     "": "Fits a linked vise and selectable generated parallels to CAM stock and sets Fusion Part Position."
   },
-  "version": "0.15.0",
+  "version": "0.16.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
