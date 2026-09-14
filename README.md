@@ -2,40 +2,42 @@
 
 Fusion add-in that fits a linked vise around CAM stock and uses Fusion's native **Setup > Part Position** for placement inside the machine model.
 
-## V0.9
+## V0.10
 
-V0.9 is primarily a diagnostic and determinism release. The latest tests show that the jaw and orientation logic can succeed while the actual Setup model still sits somewhere else. The new version therefore validates the coordinate relationship between **CAM stock/WCS** and the actual **Setup model geometry** before placing the vise.
+V0.10 addresses the intermittent linked-vise joint state seen in repeated runs and makes the setup-frame diagnostics run before any jaw operation can abort.
 
-### Deep setup-frame validation
+### Assembly-context slider drive
 
-Auto Vise now logs the world/assembly bounding box of every object in `Setup.models` and compares it against four interpretations of `Setup.workCoordinateSystem`:
+A linked Fusion component has one native joint definition, but each inserted occurrence has its own assembly context. The latest debug showed a freshly inserted vise with a **49 mm geometric jaw gap** while the native slider still reported **51.887 mm** from a previous run. Writing 51.887 mm to that native joint again therefore caused no geometric change.
+
+V0.10 now:
+
+1. gets the `movable jaw` occurrence inside the inserted vise,
+2. inspects `Occurrence.joints`, which returns joint proxies in that occurrence's assembly context,
+3. also attempts `Joint.createForAssemblyContext(vise)` as an explicit proxy route,
+4. logs native and proxy joint values separately,
+5. forces the occurrence-specific slider away from any cached value,
+6. drives the requested target gap,
+7. verifies the actual B-Rep jaw gap before continuing.
+
+If no assembly-context slider proxy can produce the requested geometry, Auto Vise stops and records the full proxy/native state rather than silently moving the wrong object.
+
+### Early setup-frame diagnostics
+
+The model/WCS frame analysis now runs immediately after CAM stock is read. This means `last_debug.txt` contains frame diagnostics even if slider adjustment fails later.
+
+Auto Vise compares the actual `Setup.models` bounding box against:
 
 - WCS direct
 - WCS direct with translation divided by 10
 - WCS inverse
 - WCS inverse with translation divided by 10
 
-The candidate whose resolved stock box best contains and centers on the actual Setup model is selected automatically. The chosen interpretation is written to `last_debug.txt`.
-
-This is intentionally defensive. Autodesk documents CAM length database units as centimeters, but the current test data strongly suggests the WCS translation and the CAM stock/body geometry are not being interpreted in the same coordinate scale by the previous code. V0.9 validates against the real model instead of assuming the matrix convention.
-
-The translucent debug stock is now drawn using this same resolved frame, so if the debug stock encloses the part, the vise placement uses exactly that frame too.
+The best-fitting frame is used for the translucent stock box and vise placement.
 
 ### Repeat-run cleanup
 
-Before inserting a new linked vise, V0.9:
-
-1. removes previous Auto Vise references from all Setup fixture collections,
-2. deletes all managed `AUTO_VISE` occurrences,
-3. processes Fusion events,
-4. verifies that no managed occurrence remains,
-5. inserts one fresh linked vise.
-
-The deep log includes occurrence tokens and cleanup results. This is intended to remove the run-to-run instability caused by stale linked occurrences or fixture references.
-
-### Deterministic jaw drive
-
-When a slider joint exists, V0.9 ignores its starting position and drives absolute `+target` and `-target` values. It then selects the result whose measured geometric jaw gap matches the required stock width/depth. The linked component's state from a previous run therefore should not affect the result.
+Before inserting a new linked vise, Auto Vise removes prior managed fixture references, deletes all previous `AUTO_VISE` occurrences, processes Fusion events, verifies cleanup, and inserts one fresh occurrence.
 
 ## Normal workflow
 
@@ -43,24 +45,24 @@ When a slider joint exists, V0.9 ignores its starting position and drives absolu
 2. Run Auto Vise.
 3. Choose Setup X or Setup Y as the jaw movement direction.
 4. Choose the fixed-jaw side and grip depth.
-5. Auto Vise opens the jaw to the stock size, resolves the actual local Setup frame, places the vise around the resolved stock, and adds it as a fixture.
-6. Part Position X/Y/Z offsets are then applied relative to Fusion's Table Attach Point.
+5. Auto Vise resolves the actual local Setup frame, opens the vise using the occurrence-specific slider joint, places the vise around the resolved CAM stock, and adds it as a fixture.
+6. Part Position X/Y/Z offsets are applied relative to Fusion's Table Attach Point.
 
 ## Debugging
 
-Keep **Show local stock + write log** enabled while testing. The log now includes:
+Keep **Show local stock + write log** enabled. Important sections now include:
 
-- Setup model object types and world/assembly bounding boxes
-- raw WCS matrix
-- all frame candidates and their stock AABBs
-- center-distance and containment error for every frame candidate
-- chosen frame
-- stale fixture/occurrence cleanup
-- slider target and measured jaw gap
+- `=== DEEP FRAME DEBUG ===`
+- `CHOSEN FRAME: ...`
+- `=== V0.10 ASSEMBLY-CONTEXT JOINT DEBUG ===`
+- native slider state
+- occurrence/proxy slider state
+- movable-jaw transform and bounding box after every forced reset and target
+- final geometric jaw gap
 - final vise transform and orientation
-- Part Position parameters before and after
+- Part Position parameters
 
-The most important sanity check is simple: the translucent stock box must surround the actual part before machine Part Position is considered.
+The first visual sanity check remains: the translucent stock box must surround the actual part. Machine Part Position comes after that local relationship is correct.
 
 ## Important Part Position detail
 
