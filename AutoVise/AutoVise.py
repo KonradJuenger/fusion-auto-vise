@@ -28,8 +28,8 @@ def _cam(doc):
 
 
 def _design(doc):
-    d = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
-    return d or adsk.fusion.Design.cast(doc.products.itemByProductType('WorkingModelProductType'))
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    return design or adsk.fusion.Design.cast(doc.products.itemByProductType('WorkingModelProductType'))
 
 
 def _param(setup, name):
@@ -57,62 +57,61 @@ def _stock(setup):
     y0, y1 = float(_p(setup, 'stockYLow')), float(_p(setup, 'stockYHigh'))
     z0, z1 = float(_p(setup, 'stockZLow')), float(_p(setup, 'stockZHigh'))
 
-    s = {
+    result = {
         'min_x': min(x0, x1), 'max_x': max(x0, x1),
         'min_y': min(y0, y1), 'max_y': max(y0, y1),
         'min_z': min(z0, z1), 'max_z': max(z0, z1),
     }
-    s['size_x'] = s['max_x'] - s['min_x']
-    s['size_y'] = s['max_y'] - s['min_y']
-    s['size_z'] = s['max_z'] - s['min_z']
-    return s
+    result['size_x'] = result['max_x'] - result['min_x']
+    result['size_y'] = result['max_y'] - result['min_y']
+    result['size_z'] = result['max_z'] - result['min_z']
+    return result
 
 
-def _v(v, k):
-    return adsk.core.Vector3D.create(v.x * k, v.y * k, v.z * k)
-
-
-def _pt(p, *vectors):
-    q = adsk.core.Point3D.create(p.x, p.y, p.z)
-    for v in vectors:
-        q.translateBy(v)
-    return q
-
-
-def _center(bb):
-    return adsk.core.Point3D.create(
-        (bb.minPoint.x + bb.maxPoint.x) / 2,
-        (bb.minPoint.y + bb.maxPoint.y) / 2,
-        (bb.minPoint.z + bb.maxPoint.z) / 2,
+def _v(vector, scale):
+    return adsk.core.Vector3D.create(
+        vector.x * scale, vector.y * scale, vector.z * scale
     )
 
 
-def _children(occ):
-    out = []
-    for i in range(occ.childOccurrences.count):
-        child = occ.childOccurrences.item(i)
-        out.append(child)
-        out.extend(_children(child))
-    return out
+def _pt(point, *vectors):
+    result = adsk.core.Point3D.create(point.x, point.y, point.z)
+    for vector in vectors:
+        result.translateBy(vector)
+    return result
 
 
-def _named(occ, text):
-    wanted = text.lower().strip()
-    for child in _children(occ):
-        for name in (child.name or '', child.component.name if child.component else ''):
+def _children(occurrence):
+    result = []
+    children = occurrence.childOccurrences
+    for i in range(children.count):
+        child = children.item(i)
+        result.append(child)
+        result.extend(_children(child))
+    return result
+
+
+def _named(occurrence, wanted_name):
+    wanted = wanted_name.lower().strip()
+    for child in _children(occurrence):
+        names = (
+            child.name or '',
+            child.component.name if child.component else '',
+        )
+        for name in names:
             if name.lower().split(':')[0].strip() == wanted:
                 return child
     return None
 
 
 def _axis_range(bb, axis):
-    if abs(axis.x) > .5:
-        a, b = axis.x * bb.minPoint.x, axis.x * bb.maxPoint.x
-    elif abs(axis.y) > .5:
-        a, b = axis.y * bb.minPoint.y, axis.y * bb.maxPoint.y
+    if abs(axis.x) > 0.5:
+        values = (axis.x * bb.minPoint.x, axis.x * bb.maxPoint.x)
+    elif abs(axis.y) > 0.5:
+        values = (axis.y * bb.minPoint.y, axis.y * bb.maxPoint.y)
     else:
-        a, b = axis.z * bb.minPoint.z, axis.z * bb.maxPoint.z
-    return min(a, b), max(a, b)
+        values = (axis.z * bb.minPoint.z, axis.z * bb.maxPoint.z)
+    return min(values), max(values)
 
 
 def _overlap(a, b, axis):
@@ -121,143 +120,200 @@ def _overlap(a, b, axis):
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
-def _fixed_face(fixed, moving_bb, clamp, across):
-    """Find the actual fixed gripping face. The reference fixed-jaw component also contains the vise base."""
+def _fixed_face_candidates(fixed, moving_bb, clamp, across):
+    """Return plausible fixed gripping faces for one candidate native clamp direction."""
     moving_inner, _ = _axis_range(moving_bb, clamp)
     across0, across1 = _axis_range(moving_bb, across)
     moving_width = max(across1 - across0, 1e-9)
     moving_height = max(moving_bb.maxPoint.z - moving_bb.minPoint.z, 1e-9)
-    candidates = []
 
-    for bi in range(fixed.bRepBodies.count):
-        body = fixed.bRepBodies.item(bi)
-        for fi in range(body.faces.count):
-            face = body.faces.item(fi)
+    candidates = []
+    for body_index in range(fixed.bRepBodies.count):
+        body = fixed.bRepBodies.item(body_index)
+        for face_index in range(body.faces.count):
+            face = body.faces.item(face_index)
             try:
                 bb = face.boundingBox
                 c0, c1 = _axis_range(bb, clamp)
-                if c1 - c0 > .001:
+
+                if c1 - c0 > 0.001:
                     continue
-                pos = (c0 + c1) / 2
-                if pos >= moving_inner - .0001:
+
+                position = (c0 + c1) / 2.0
+
+                if position >= moving_inner - 0.0001:
                     continue
-                if _overlap(bb, moving_bb, across) < moving_width * .5:
+
+                across_overlap = _overlap(bb, moving_bb, across)
+                if across_overlap < moving_width * 0.5:
                     continue
+
                 z_overlap = max(
-                    0,
-                    min(bb.maxPoint.z, moving_bb.maxPoint.z) -
-                    max(bb.minPoint.z, moving_bb.minPoint.z),
+                    0.0,
+                    min(bb.maxPoint.z, moving_bb.maxPoint.z)
+                    - max(bb.minPoint.z, moving_bb.minPoint.z),
                 )
-                if z_overlap < moving_height * .35:
+                if z_overlap < moving_height * 0.35:
                     continue
-                if bb.maxPoint.z < moving_bb.maxPoint.z - .75:
+
+                if bb.maxPoint.z < moving_bb.maxPoint.z - 0.75:
                     continue
-                candidates.append((pos, getattr(face, 'area', 0.0), bb, bi, fi))
+
+                candidates.append(
+                    (
+                        position,
+                        getattr(face, 'area', 0.0),
+                        bb,
+                        body_index,
+                        face_index,
+                        across_overlap,
+                        z_overlap,
+                    )
+                )
             except Exception:
                 pass
 
-    if not candidates:
-        raise RuntimeError('Could not identify the fixed jaw gripping face. Send last_debug.txt.')
-
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return candidates[0], candidates
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
 
 
 def _vise_info(vise):
+    """Detect native vise clamp direction by testing +/-X and +/-Y."""
     fixed = _named(vise, 'fixed jaw')
     moving = _named(vise, 'movable jaw')
     if not fixed or not moving:
-        raise RuntimeError('Vise needs child components named "fixed jaw" and "movable jaw".')
+        raise RuntimeError(
+            'Vise needs child components named "fixed jaw" and "movable jaw".'
+        )
 
-    root_bb = vise.preciseBoundingBox
     moving_bb = moving.preciseBoundingBox
-    root_center = _center(root_bb)
-    moving_center = _center(moving_bb)
-    dx = moving_center.x - root_center.x
-    dy = moving_center.y - root_center.y
-
-    if abs(dx) >= abs(dy):
-        clamp = adsk.core.Vector3D.create(1 if dx >= 0 else -1, 0, 0)
-    else:
-        clamp = adsk.core.Vector3D.create(0, 1 if dy >= 0 else -1, 0)
-
     up = adsk.core.Vector3D.create(0, 0, 1)
-    across = clamp.crossProduct(up)
-    across.normalize()
 
-    chosen, candidates = _fixed_face(fixed, moving_bb, clamp, across)
-    fixed_inner, _, contact_bb, body_index, face_index = chosen
-    moving_inner, _ = _axis_range(moving_bb, clamp)
-    across0, across1 = _axis_range(contact_bb, across)
+    directions = (
+        ('+X', adsk.core.Vector3D.create(1, 0, 0)),
+        ('-X', adsk.core.Vector3D.create(-1, 0, 0)),
+        ('+Y', adsk.core.Vector3D.create(0, 1, 0)),
+        ('-Y', adsk.core.Vector3D.create(0, -1, 0)),
+    )
 
-    return {
-        'fixed': fixed,
-        'moving': moving,
-        'clamp': clamp,
-        'across': across,
-        'fixed_inner': fixed_inner,
-        'moving_inner': moving_inner,
-        'gap': moving_inner - fixed_inner,
-        'across_center': (across0 + across1) / 2,
-        'jaw_top': contact_bb.maxPoint.z,
-        'contact_bb': contact_bb,
-        'contact_body': body_index,
-        'contact_face': face_index,
-        'candidates': candidates,
-    }
+    solutions = []
+    attempts = []
+
+    for label, clamp in directions:
+        across = clamp.crossProduct(up)
+        if across.length < 1e-9:
+            continue
+        across.normalize()
+
+        candidates = _fixed_face_candidates(fixed, moving_bb, clamp, across)
+        if not candidates:
+            attempts.append(f'{label}: no gripping-face candidates')
+            continue
+
+        chosen = candidates[0]
+        fixed_inner, _, contact_bb, body_index, face_index, _, _ = chosen
+        moving_inner, _ = _axis_range(moving_bb, clamp)
+        gap = moving_inner - fixed_inner
+
+        if gap <= 0.001:
+            attempts.append(f'{label}: candidate found but gap={gap * 10.0:.3f} mm')
+            continue
+
+        across0, across1 = _axis_range(contact_bb, across)
+        solution = {
+            'fixed': fixed,
+            'moving': moving,
+            'clamp': clamp,
+            'across': across,
+            'native_clamp_label': label,
+            'fixed_inner': fixed_inner,
+            'moving_inner': moving_inner,
+            'gap': gap,
+            'across_center': (across0 + across1) / 2.0,
+            'jaw_top': contact_bb.maxPoint.z,
+            'contact_bb': contact_bb,
+            'contact_body': body_index,
+            'contact_face': face_index,
+            'candidates': candidates,
+        }
+
+        best = candidates[0]
+        score = best[5] * max(best[6], 1e-6)
+        solutions.append((score, solution))
+        attempts.append(
+            f'{label}: valid gap={gap * 10.0:.3f} mm '
+            f'body={body_index} face={face_index}'
+        )
+
+    if not solutions:
+        raise RuntimeError(
+            'Could not identify the fixed jaw gripping face in any native '
+            'vise direction. Detector attempts: ' + ' | '.join(attempts)
+        )
+
+    solutions.sort(key=lambda item: item[0], reverse=True)
+    result = solutions[0][1]
+    result['detector_attempts'] = attempts
+    return result
 
 
-def _place_vise(vise, info, setup, stock, grip, axis, side):
-    """Place the vise around CAM stock in design/setup space. Machine placement is handled separately by Part Position."""
-    origin, sx, sy, sz = setup.workCoordinateSystem.getAsCoordinateSystem()
-    sx.normalize()
-    sy.normalize()
-    sz.normalize()
+def _place_vise(vise, info, setup, stock, grip, axis, fixed_sign):
+    """Place vise around CAM stock locally; Part Position handles the machine."""
+    origin, setup_x, setup_y, setup_z = (
+        setup.workCoordinateSystem.getAsCoordinateSystem()
+    )
+    setup_x.normalize()
+    setup_y.normalize()
+    setup_z.normalize()
 
-    src_x = info['across'].copy()
-    src_y = info['clamp'].copy()
-    src_z = adsk.core.Vector3D.create(0, 0, 1)
+    source_across = info['across'].copy()
+    source_clamp = info['clamp'].copy()
+    source_up = adsk.core.Vector3D.create(0, 0, 1)
 
     if axis == 'Y':
-        inward = sy.copy()
-        stock_face = stock['max_y'] if side == 'Y+' else stock['min_y']
-        if side == 'Y+':
+        inward = setup_y.copy()
+        stock_face = stock['max_y'] if fixed_sign == '+' else stock['min_y']
+        if fixed_sign == '+':
             inward.scaleBy(-1)
         anchor = _pt(
             origin,
-            _v(sx, (stock['min_x'] + stock['max_x']) / 2),
-            _v(sy, stock_face),
-            _v(sz, stock['min_z'] + grip),
+            _v(setup_x, (stock['min_x'] + stock['max_x']) / 2.0),
+            _v(setup_y, stock_face),
+            _v(setup_z, stock['min_z'] + grip),
         )
     else:
-        inward = sx.copy()
-        stock_face = stock['max_x'] if side == 'X+' else stock['min_x']
-        if side == 'X+':
+        inward = setup_x.copy()
+        stock_face = stock['max_x'] if fixed_sign == '+' else stock['min_x']
+        if fixed_sign == '+':
             inward.scaleBy(-1)
         anchor = _pt(
             origin,
-            _v(sx, stock_face),
-            _v(sy, (stock['min_y'] + stock['max_y']) / 2),
-            _v(sz, stock['min_z'] + grip),
+            _v(setup_x, stock_face),
+            _v(setup_y, (stock['min_y'] + stock['max_y']) / 2.0),
+            _v(setup_z, stock['min_z'] + grip),
         )
 
-    target_z = sz.copy()
-    target_x = inward.crossProduct(target_z)
-    target_x.normalize()
+    target_up = setup_z.copy()
+    target_across = inward.crossProduct(target_up)
+    target_across.normalize()
 
     destination_origin = _pt(
         anchor,
-        _v(target_x, -info['across_center']),
+        _v(target_across, -info['across_center']),
         _v(inward, -info['fixed_inner']),
-        _v(target_z, -info['jaw_top']),
+        _v(target_up, -info['jaw_top']),
     )
 
     transform = adsk.core.Matrix3D.create()
     if not transform.setToAlignCoordinateSystems(
         adsk.core.Point3D.create(0, 0, 0),
-        src_x, src_y, src_z,
+        source_across,
+        source_clamp,
+        source_up,
         destination_origin,
-        target_x, inward, target_z,
+        target_across,
+        inward,
+        target_up,
     ):
         raise RuntimeError('Failed to calculate the vise-to-stock transform.')
 
@@ -266,25 +322,26 @@ def _place_vise(vise, info, setup, stock, grip, axis, side):
     world_clamp = info['clamp'].copy()
     world_clamp.transformBy(transform)
     world_clamp.normalize()
+
     return transform, anchor, world_clamp
 
 
 def _move_jaw(design, moving, world_clamp, delta):
-    m = moving.transform2.copy()
-    t = m.translation
-    t.x += world_clamp.x * delta
-    t.y += world_clamp.y * delta
-    t.z += world_clamp.z * delta
-    m.translation = t
+    transform = moving.transform2.copy()
+    translation = transform.translation
+    translation.x += world_clamp.x * delta
+    translation.y += world_clamp.y * delta
+    translation.z += world_clamp.z * delta
+    transform.translation = translation
 
     try:
-        if design.rootComponent.transformOccurrences([moving], [m], True):
+        if design.rootComponent.transformOccurrences([moving], [transform], True):
             return True
     except Exception:
         pass
 
     try:
-        moving.transform2 = m
+        moving.transform2 = transform
         return True
     except Exception:
         return False
@@ -326,22 +383,25 @@ def _master(doc, choose=False):
         except Exception:
             pass
 
-    dlg = ui.createCloudFileDialog()
-    dlg.title = 'Select vise master (remembered after this)'
-    dlg.isMultiSelectEnabled = False
-    dlg.filter = '*'
+    dialog = ui.createCloudFileDialog()
+    dialog.title = 'Select vise master (remembered after this)'
+    dialog.isMultiSelectEnabled = False
+    dialog.filter = '*'
+
     try:
         if doc.dataFile:
-            dlg.dataFolder = doc.dataFile.parentFolder
+            dialog.dataFolder = doc.dataFile.parentFolder
     except Exception:
         pass
 
-    if dlg.showOpen() != adsk.core.DialogResults.DialogOK or not dlg.dataFile:
+    if dialog.showOpen() != adsk.core.DialogResults.DialogOK or not dialog.dataFile:
         return None, False
 
-    df = dlg.dataFile
+    df = dialog.dataFile
+
     if not doc.dataFile:
         raise RuntimeError('Save the machining document to Fusion cloud first.')
+
     if df.parentProject.id != doc.dataFile.parentProject.id:
         raise RuntimeError('Vise and machining file must be in the same Fusion project.')
 
@@ -351,34 +411,35 @@ def _master(doc, choose=False):
 
 def _managed_vise(root):
     for i in range(root.occurrences.count):
-        occ = root.occurrences.item(i)
-        attr = occ.attributes.itemByName(ATTR, 'managed')
+        occurrence = root.occurrences.item(i)
+        attr = occurrence.attributes.itemByName(ATTR, 'managed')
         if attr and attr.value == '1':
-            return occ
+            return occurrence
     return None
 
 
 def _insert_fresh_vise(design, df):
     root = design.rootComponent
     old = _managed_vise(root)
+
     if old:
         try:
             old.deleteMe()
         except Exception:
             pass
 
-    occ = root.occurrences.addByInsert(df, adsk.core.Matrix3D.create(), True)
-    if not occ:
+    occurrence = root.occurrences.addByInsert(df, adsk.core.Matrix3D.create(), True)
+    if not occurrence:
         raise RuntimeError('Failed to insert linked vise.')
 
     try:
-        occ.name = 'AUTO_VISE: ' + df.name
+        occurrence.name = 'AUTO_VISE: ' + df.name
     except Exception:
         pass
 
-    occ.attributes.add(ATTR, 'managed', '1')
-    occ.attributes.add(ATTR, 'data_file_id', df.id)
-    return occ
+    occurrence.attributes.add(ATTR, 'managed', '1')
+    occurrence.attributes.add(ATTR, 'data_file_id', df.id)
+    return occurrence
 
 
 def _fixture(setup, vise):
@@ -389,9 +450,9 @@ def _fixture(setup, vise):
         old = setup.fixtures
         for i in range(old.count):
             item = old.item(i)
-            occ = adsk.fusion.Occurrence.cast(item)
-            if occ:
-                attr = occ.attributes.itemByName(ATTR, 'managed')
+            occurrence = adsk.fusion.Occurrence.cast(item)
+            if occurrence:
+                attr = occurrence.attributes.itemByName(ATTR, 'managed')
                 if attr and attr.value == '1':
                     continue
             items.add(item)
@@ -410,7 +471,6 @@ PART_POS_PARAMS = (
 
 
 def _part_position_values_mm(setup):
-    """Return current Fusion Part Position XYZ in mm, or None if this Setup does not expose them."""
     values = []
     for name in PART_POS_PARAMS:
         p = setup.parameters.itemByName(name)
@@ -424,21 +484,23 @@ def _part_position_values_mm(setup):
 
 
 def _set_part_position(setup, xyz_mm):
-    """Write Fusion's native Setup > Part Position XYZ offsets."""
     for name, mm in zip(PART_POS_PARAMS, xyz_mm):
         p = setup.parameters.itemByName(name)
         if not p:
             raise RuntimeError(
-                f'This Setup does not expose {name}. Assign a machine to the Setup and make sure '
-                'Part Position is available before using machine placement.'
+                f'This Setup does not expose {name}. Assign a machine to the Setup and make sure Part Position is available.'
             )
+
         try:
             p.expression = f'{mm:.6f} mm'
+            continue
         except Exception:
-            try:
-                p.value.value = mm / 10.0
-            except Exception as exc:
-                raise RuntimeError(f'Could not set {name}: {exc}')
+            pass
+
+        try:
+            p.value.value = mm / 10.0
+        except Exception as exc:
+            raise RuntimeError(f'Could not set {name}: {exc}')
 
 
 def _saved_machine_position_mm():
@@ -457,17 +519,25 @@ def _save_machine_position_mm(xyz):
     _save_settings(settings)
 
 
-def _xyz(v):
-    return f'({v.x:.6f}, {v.y:.6f}, {v.z:.6f})'
+def _save_workholding(axis, fixed_sign, grip_mm):
+    settings = _load_settings()
+    settings['vise_clamp_axis'] = axis
+    settings['fixed_side_sign'] = fixed_sign
+    settings['grip_depth_mm'] = float(grip_mm)
+    _save_settings(settings)
+
+
+def _xyz(value):
+    return f'({value.x:.6f}, {value.y:.6f}, {value.z:.6f})'
 
 
 def _bb(bb):
     return f'min={_xyz(bb.minPoint)} max={_xyz(bb.maxPoint)}'
 
 
-def _mat(m):
+def _mat(matrix):
     try:
-        return '[' + ', '.join(f'{x:.6f}' for x in m.asArray()) + ']'
+        return '[' + ', '.join(f'{x:.6f}' for x in matrix.asArray()) + ']'
     except Exception:
         return '<unavailable>'
 
@@ -494,16 +564,15 @@ def _debug_stock(design, setup, stock):
 
     center = _pt(
         origin,
-        _v(x, (stock['min_x'] + stock['max_x']) / 2),
-        _v(y, (stock['min_y'] + stock['max_y']) / 2),
-        _v(z, (stock['min_z'] + stock['max_z']) / 2),
+        _v(x, (stock['min_x'] + stock['max_x']) / 2.0),
+        _v(y, (stock['min_y'] + stock['max_y']) / 2.0),
+        _v(z, (stock['min_z'] + stock['max_z']) / 2.0),
     )
-    box = adsk.core.OrientedBoundingBox3D.create(
-        center, x, y, stock['size_x'], stock['size_y'], stock['size_z']
-    )
+
+    box = adsk.core.OrientedBoundingBox3D.create(center, x, y, stock['size_x'], stock['size_y'], stock['size_z'])
     body = group.addBRepBody(adsk.fusion.TemporaryBRepManager.get().createBox(box))
     try:
-        body.setOpacity(.18, True)
+        body.setOpacity(0.18, True)
     except Exception:
         pass
 
@@ -511,32 +580,41 @@ def _debug_stock(design, setup, stock):
 def _write(lines):
     path = os.path.join(HERE, 'last_debug.txt')
     text = '\n'.join(lines) + '\n'
+
     try:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(text)
     except Exception:
         path = '<write failed>'
+
     try:
         adsk.core.Application.get().log(text)
     except Exception:
         pass
+
     return path
 
 
 def _log_info(lines, info, label):
     lines += [
         label,
+        f'  native clamp={info["native_clamp_label"]} vector={_xyz(info["clamp"])} across={_xyz(info["across"])}',
         f'  fixed bbox: {_bb(info["fixed"].preciseBoundingBox)}',
         f'  moving bbox: {_bb(info["moving"].preciseBoundingBox)}',
-        f'  clamp={_xyz(info["clamp"])} across={_xyz(info["across"])}',
-        f'  fixed contact={info["fixed_inner"]:.6f} moving contact={info["moving_inner"]:.6f} '
-        f'gap={info["gap"] * 10:.3f} mm',
-        f'  chosen contact body={info["contact_body"]} face={info["contact_face"]} '
-        f'{_bb(info["contact_bb"])}',
+        f'  fixed contact={info["fixed_inner"]:.6f} moving contact={info["moving_inner"]:.6f} gap={info["gap"] * 10.0:.3f} mm',
+        f'  chosen contact body={info["contact_body"]} face={info["contact_face"]} {_bb(info["contact_bb"])}',
         f'  candidates={len(info["candidates"])}',
     ]
-    for pos, area, bb, bi, fi in info['candidates'][:8]:
-        lines.append(f'    body={bi} face={fi} pos={pos:.6f} area={area:.4f} {_bb(bb)}')
+
+    for attempt in info.get('detector_attempts', []):
+        lines.append(f'  detector: {attempt}')
+
+    for candidate in info['candidates'][:8]:
+        position, area, bb, body_index, face_index, across_overlap, z_overlap = candidate
+        lines.append(
+            f'    body={body_index} face={face_index} pos={position:.6f} area={area:.4f} '
+            f'across_overlap={across_overlap:.4f} z_overlap={z_overlap:.4f} {_bb(bb)}'
+        )
 
 
 def _setup_by_name(cam, name):
@@ -562,72 +640,70 @@ def _initial_machine_position_mm(setup):
 class Created(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
         app, ui = _app_ui()
+
         try:
             cam = _cam(app.activeDocument)
             if not cam or not cam.setups.count:
                 raise RuntimeError('Create a Manufacture Setup first.')
 
+            settings = _load_settings()
             inputs = args.command.commandInputs
 
-            dd = inputs.addDropDownCommandInput(
-                'setup', 'Setup', adsk.core.DropDownStyles.TextListDropDownStyle
-            )
-            for n in range(cam.setups.count):
-                dd.listItems.add(cam.setups.item(n).name, n == 0, '')
+            setup_input = inputs.addDropDownCommandInput('setup', 'Setup', adsk.core.DropDownStyles.TextListDropDownStyle)
+            for i in range(cam.setups.count):
+                setup_input.listItems.add(cam.setups.item(i).name, i == 0, '')
 
             first_setup = cam.setups.item(0)
 
-            axis = inputs.addDropDownCommandInput(
-                'axis', 'Clamp along setup axis', adsk.core.DropDownStyles.TextListDropDownStyle
-            )
-            axis.listItems.add('Y', True, '')
-            axis.listItems.add('X', False, '')
+            saved_axis = settings.get('vise_clamp_axis', 'X')
+            if saved_axis not in ('X', 'Y'):
+                saved_axis = 'X'
 
-            side = inputs.addDropDownCommandInput(
-                'side', 'Stock side at fixed jaw', adsk.core.DropDownStyles.TextListDropDownStyle
+            orientation = inputs.addDropDownCommandInput(
+                'orientation', 'Vise clamping direction', adsk.core.DropDownStyles.TextListDropDownStyle
             )
-            for value in ('Y+', 'Y-', 'X+', 'X-'):
-                side.listItems.add(value, value == 'Y+', '')
+            orientation.listItems.add('Setup X', saved_axis == 'X', '')
+            orientation.listItems.add('Setup Y', saved_axis == 'Y', '')
 
-            inputs.addValueInput(
-                'grip', 'Grip depth', 'mm', adsk.core.ValueInput.createByString('4 mm')
-            )
+            saved_sign = settings.get('fixed_side_sign', '+')
+            if saved_sign not in ('+', '-'):
+                saved_sign = '+'
 
-            xyz, source = _initial_machine_position_mm(first_setup)
-            inputs.addValueInput(
-                'machine_x', 'Machine Part Position X', 'mm',
-                adsk.core.ValueInput.createByString(f'{xyz[0]:.6f} mm')
+            fixed_side = inputs.addDropDownCommandInput(
+                'fixed_sign', 'Fixed jaw side', adsk.core.DropDownStyles.TextListDropDownStyle
             )
-            inputs.addValueInput(
-                'machine_y', 'Machine Part Position Y', 'mm',
-                adsk.core.ValueInput.createByString(f'{xyz[1]:.6f} mm')
-            )
-            inputs.addValueInput(
-                'machine_z', 'Machine Part Position Z', 'mm',
-                adsk.core.ValueInput.createByString(f'{xyz[2]:.6f} mm')
-            )
+            fixed_side.listItems.add('+ side', saved_sign == '+', '')
+            fixed_side.listItems.add('- side', saved_sign == '-', '')
+
+            grip_mm = float(settings.get('grip_depth_mm', 4.0))
+            inputs.addValueInput('grip', 'Grip depth', 'mm', adsk.core.ValueInput.createByString(f'{grip_mm:.3f} mm'))
+
+            xyz, xyz_source = _initial_machine_position_mm(first_setup)
+            inputs.addValueInput('machine_x', 'Machine Part Position X', 'mm', adsk.core.ValueInput.createByString(f'{xyz[0]:.6f} mm'))
+            inputs.addValueInput('machine_y', 'Machine Part Position Y', 'mm', adsk.core.ValueInput.createByString(f'{xyz[1]:.6f} mm'))
+            inputs.addValueInput('machine_z', 'Machine Part Position Z', 'mm', adsk.core.ValueInput.createByString(f'{xyz[2]:.6f} mm'))
 
             inputs.addBoolValueInput('remember_xyz', 'Remember machine XYZ', True, '', True)
             inputs.addBoolValueInput('fixture', 'Add vise to Setup fixtures', True, '', True)
             inputs.addBoolValueInput('choose', 'Choose/change vise master', True, '', False)
             inputs.addBoolValueInput('debug', 'Show local stock + write log', True, '', True)
 
-            settings = _load_settings()
-            master = settings.get('vise_name', 'none yet')
+            master_name = settings.get('vise_name', 'none yet')
             part_position_available = _part_position_values_mm(first_setup) is not None
+
             inputs.addTextBoxCommandInput(
                 'info', '',
-                f'Remembered vise: {master}\n'
-                f'Machine XYZ source: {source}\n'
+                f'Remembered vise: {master_name}\n'
+                f'Machine XYZ source: {xyz_source}\n'
                 f'Fusion Part Position available: {"yes" if part_position_available else "NO"}\n'
-                'The vise is fitted around the stock locally. Fusion Part Position moves the complete '
-                'part + fixture assembly relative to the machine model.',
+                'Vise orientation is local to the Setup. Machine X/Y/Z then places the complete part + fixture assembly in the machine model.',
                 5, True,
             )
 
             handler = Execute()
             args.command.execute.add(handler)
             _handlers.append(handler)
+
         except Exception:
             ui.messageBox(traceback.format_exc(), APP_NAME)
 
@@ -648,13 +724,17 @@ class Execute(adsk.core.CommandEventHandler):
             if not setup:
                 raise RuntimeError(f'Setup not found: {setup_name}')
 
-            axis = inputs.itemById('axis').selectedItem.name
-            side = inputs.itemById('side').selectedItem.name
-            if not side.startswith(axis):
-                raise RuntimeError(f'{side} does not match clamp axis {axis}.')
+            orientation_name = inputs.itemById('orientation').selectedItem.name
+            axis = 'X' if orientation_name == 'Setup X' else 'Y'
+
+            fixed_name = inputs.itemById('fixed_sign').selectedItem.name
+            fixed_sign = '+' if fixed_name.startswith('+') else '-'
 
             stock = _stock(setup)
             wcs_origin, _, _, _ = setup.workCoordinateSystem.getAsCoordinateSystem()
+
+            grip_cm = inputs.itemById('grip').value
+            grip_mm = grip_cm * 10.0
 
             machine_xyz_mm = (
                 inputs.itemById('machine_x').value * 10.0,
@@ -666,51 +746,48 @@ class Execute(adsk.core.CommandEventHandler):
                 f'Auto Vise debug {datetime.now().isoformat(timespec="seconds")}',
                 f'Document: {doc.name}',
                 f'Setup: {setup.name}',
-                f'Clamp axis {axis}, stock fixed side {side}',
-                f'Stock size {stock["size_x"] * 10:.3f} x {stock["size_y"] * 10:.3f} '
-                f'x {stock["size_z"] * 10:.3f} mm',
+                f'Vise clamping direction Setup {axis}, fixed jaw {fixed_sign} side',
+                f'Grip depth {grip_mm:.3f} mm',
+                f'Stock size {stock["size_x"] * 10.0:.3f} x {stock["size_y"] * 10.0:.3f} x {stock["size_z"] * 10.0:.3f} mm',
                 f'Setup WCS origin {_xyz(wcs_origin)}',
                 f'Setup WCS matrix {_mat(setup.workCoordinateSystem)}',
-                f'Requested Fusion Part Position XYZ: '
-                f'{machine_xyz_mm[0]:.3f}, {machine_xyz_mm[1]:.3f}, {machine_xyz_mm[2]:.3f} mm',
+                f'Requested Fusion Part Position XYZ: {machine_xyz_mm[0]:.3f}, {machine_xyz_mm[1]:.3f}, {machine_xyz_mm[2]:.3f} mm',
             ]
 
-            current_part_position = _part_position_values_mm(setup)
-            lines.append(
-                'Part Position before: ' +
-                (f'{current_part_position[0]:.3f}, {current_part_position[1]:.3f}, '
-                 f'{current_part_position[2]:.3f} mm'
-                 if current_part_position is not None else '<not exposed by Setup>')
-            )
+            before = _part_position_values_mm(setup)
+            if before is None:
+                lines.append('Part Position before: <not exposed by Setup>')
+            else:
+                lines.append(f'Part Position before: {before[0]:.3f}, {before[1]:.3f}, {before[2]:.3f} mm')
 
             df, remembered = _master(doc, inputs.itemById('choose').value)
             if not df:
                 return
+
             lines.append(f'Vise master {df.name}, remembered={remembered}, id={df.id}')
 
             vise = _insert_fresh_vise(design, df)
             info = _vise_info(vise)
             _log_info(lines, info, 'Master vise:')
 
-            grip = inputs.itemById('grip').value
             placement, anchor, world_clamp = _place_vise(
-                vise, info, setup, stock, grip, axis, side
+                vise, info, setup, stock, grip_cm, axis, fixed_sign
             )
+
             lines += [
                 f'Local fixed-jaw anchor {_xyz(anchor)}',
                 f'Local vise placement {_mat(placement)}',
                 f'World clamp {_xyz(world_clamp)}',
             ]
 
-            required_gap = stock['size_y'] if axis == 'Y' else stock['size_x']
+            required_gap = stock['size_x'] if axis == 'X' else stock['size_y']
             jaw_delta = required_gap - info['gap']
-            lines.append(
-                f'Required jaw gap {required_gap * 10:.3f} mm; '
-                f'jaw delta {jaw_delta * 10:.3f} mm'
-            )
+
+            lines.append(f'Required jaw gap {required_gap * 10.0:.3f} mm; jaw delta {jaw_delta * 10.0:.3f} mm')
 
             if not _move_jaw(design, info['moving'], world_clamp, jaw_delta):
                 raise RuntimeError('Fusion rejected the movable-jaw transform.')
+
             lines.append(f'Moving jaw after adjustment: {_bb(info["moving"].preciseBoundingBox)}')
 
             if inputs.itemById('fixture').value:
@@ -719,16 +796,19 @@ class Execute(adsk.core.CommandEventHandler):
 
             _set_part_position(setup, machine_xyz_mm)
             adsk.doEvents()
-            applied = _part_position_values_mm(setup)
-            lines.append(
-                'Part Position after: ' +
-                (f'{applied[0]:.3f}, {applied[1]:.3f}, {applied[2]:.3f} mm'
-                 if applied is not None else '<could not read back>')
-            )
+
+            after = _part_position_values_mm(setup)
+            if after is None:
+                lines.append('Part Position after: <could not read back>')
+            else:
+                lines.append(f'Part Position after: {after[0]:.3f}, {after[1]:.3f}, {after[2]:.3f} mm')
 
             if inputs.itemById('remember_xyz').value:
                 _save_machine_position_mm(machine_xyz_mm)
-                lines.append('Machine Part Position XYZ saved in AutoVise/settings.json')
+                lines.append('Machine Part Position XYZ saved in settings.json')
+
+            _save_workholding(axis, fixed_sign, grip_mm)
+            lines.append('Vise orientation / fixed side / grip depth saved in settings.json')
 
             if inputs.itemById('debug').value:
                 _debug_stock(design, setup, stock)
@@ -737,46 +817,77 @@ class Execute(adsk.core.CommandEventHandler):
             path = _write(lines)
             ui.messageBox(
                 f'Auto Vise updated {setup.name}.\n'
-                f'Jaw adjusted by {jaw_delta * 10:.3f} mm.\n'
-                f'Part Position: X {machine_xyz_mm[0]:.3f}, '
-                f'Y {machine_xyz_mm[1]:.3f}, Z {machine_xyz_mm[2]:.3f} mm.\n\n'
-                'The design geometry stays in local setup space. Fusion Part Position places '
-                'the part + fixture assembly in the machine model.\n\n'
+                f'Vise clamps along Setup {axis}, fixed jaw {fixed_sign} side.\n'
+                f'Jaw adjusted by {jaw_delta * 10.0:.3f} mm.\n'
+                f'Part Position: X {machine_xyz_mm[0]:.3f}, Y {machine_xyz_mm[1]:.3f}, Z {machine_xyz_mm[2]:.3f} mm.\n\n'
                 f'Debug log: {path}',
                 APP_NAME,
             )
 
         except Exception as exc:
             lines += ['', f'EXCEPTION: {exc}', traceback.format_exc()]
-            _write(lines)
-            ui.messageBox(f'{exc}\n\n{traceback.format_exc()}', APP_NAME)
+            path = _write(lines)
+            ui.messageBox(f'{exc}\n\nDebug log: {path}\n\n{traceback.format_exc()}', APP_NAME)
+
+
+def _destroy_ui(ui):
+    """Remove stale Fusion UI objects so re-running hot-reloads the dialog."""
+    try:
+        workspace = ui.workspaces.itemById('CAMEnvironment')
+    except Exception:
+        workspace = None
+
+    if workspace:
+        try:
+            panel = workspace.toolbarPanels.itemById(PANEL_ID)
+            if panel:
+                try:
+                    control = panel.controls.itemById(CMD_ID)
+                    if control:
+                        control.deleteMe()
+                except Exception:
+                    pass
+                try:
+                    panel.deleteMe()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    try:
+        command = ui.commandDefinitions.itemById(CMD_ID)
+        if command:
+            command.deleteMe()
+    except Exception:
+        pass
 
 
 def run(context):
     _, ui = _app_ui()
+
     try:
+        _destroy_ui(ui)
+        _handlers.clear()
+
         workspace = ui.workspaces.itemById('CAMEnvironment')
-        command = ui.commandDefinitions.itemById(CMD_ID)
-        if not command:
-            command = ui.commandDefinitions.addButtonDefinition(
-                CMD_ID,
-                'Auto Vise',
-                'Fit a linked vise to CAM stock and set native Fusion Part Position.',
-                RES,
-            )
+        if not workspace:
+            raise RuntimeError('Manufacture workspace not found.')
+
+        command = ui.commandDefinitions.addButtonDefinition(
+            CMD_ID,
+            'Auto Vise',
+            'Fit a linked vise to CAM stock and set native Fusion Part Position.',
+            RES,
+        )
 
         handler = Created()
         command.commandCreated.add(handler)
         _handlers.append(handler)
 
-        panel = workspace.toolbarPanels.itemById(PANEL_ID)
-        if not panel:
-            panel = workspace.toolbarPanels.add(PANEL_ID, 'Auto Vise')
-
-        if not panel.controls.itemById(CMD_ID):
-            control = panel.controls.addCommand(command)
-            control.isPromotedByDefault = True
-            control.isPromoted = True
+        panel = workspace.toolbarPanels.add(PANEL_ID, 'Auto Vise')
+        control = panel.controls.addCommand(command)
+        control.isPromotedByDefault = True
+        control.isPromoted = True
 
     except Exception:
         ui.messageBox(traceback.format_exc(), APP_NAME)
@@ -785,19 +896,8 @@ def run(context):
 def stop(context):
     _, ui = _app_ui()
     try:
-        workspace = ui.workspaces.itemById('CAMEnvironment')
-        panel = workspace.toolbarPanels.itemById(PANEL_ID) if workspace else None
-        if panel:
-            control = panel.controls.itemById(CMD_ID)
-            if control:
-                control.deleteMe()
-            panel.deleteMe()
-
-        command = ui.commandDefinitions.itemById(CMD_ID)
-        if command:
-            command.deleteMe()
-
+        _destroy_ui(ui)
         _clear_debug()
-
+        _handlers.clear()
     except Exception:
         pass
