@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
+  "author": "JÜNGERKÜHN",
+  "description": {
+    "": "Places a linked vise from Fusion Manufacture setup stock."
+  },
+  "version": "0.1.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
