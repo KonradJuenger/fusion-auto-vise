@@ -60,6 +60,7 @@ def _load_modules():
         import autovise_impl
         import autovise_v09
         import autovise_v11
+        import autovise_v13
 
         _write_bootstrap('base imports succeeded')
 
@@ -84,6 +85,11 @@ def _load_modules():
         _write_bootstrap('reloaded autovise_v11')
         autovise_v11.apply_patches()
         _write_bootstrap('applied V0.11 jaw/proxy patches')
+
+        importlib.reload(autovise_v13)
+        _write_bootstrap('reloaded autovise_v13')
+        autovise_v13.apply_patches()
+        _write_bootstrap('applied V0.13 parallel frame patches')
 
         _loaded_impl = autovise_impl
         _write_bootstrap('module load complete')
