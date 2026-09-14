@@ -2,6 +2,20 @@ import adsk.core
 import adsk.fusion
 import adsk.cam
 
+
+def _param(setup, name):
+    p = setup.parameters.itemByName(name)
+    if not p:
+        raise RuntimeError(f'Missing CAM parameter: {name}')
+    return p
+
+
+def _p(setup, name):
+    p = _param(setup, name)
+    if not p.value:
+        raise RuntimeError(f'CAM parameter has no value: {name}')
+    return p.value.value
+
 def _stock(setup):
     if setup.stockMode not in (
         adsk.cam.SetupStockModes.FixedBoxStock,
@@ -145,7 +159,7 @@ def _vise_info(vise):
             'across': across,
             'native_clamp_label': label,
             'fixed_inner': fixed_inner,
-            'moving_inner': moving_inner,
+           'moving_inner': moving_inner,
             'gap': gap,
             'across_center': (a0 + a1) / 2.0,
             'jaw_top': contact_bb.maxPoint.z,
@@ -279,7 +293,7 @@ def _set_jaw_gap(design, vise, required_gap, lines):
             lines.append(
                 f'Slider final: slideValue={motion.slideValue * 10.0:.3f} mm, '
                 f'gap={final["gap"] * 10.0:.3f} mm'
-            )
+             )
             if final_error <= 0.005:
                 return final, f'slider joint {name}'
             raise RuntimeError(
