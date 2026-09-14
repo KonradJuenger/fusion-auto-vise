@@ -4,9 +4,9 @@
   "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
   "author": "JÜNGERKÜHN",
   "description": {
-    "": "Fits a linked vise to CAM stock with stable jaw detection, assembly-context joint driving and deep frame validation."
+    "": "Fits a linked vise and selectable generated parallels to CAM stock and sets Fusion Part Position."
   },
-  "version": "0.11.0",
+  "version": "0.12.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
