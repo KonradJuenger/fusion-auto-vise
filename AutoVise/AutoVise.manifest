@@ -6,7 +6,7 @@
   "description": {
     "": "Fits a linked vise to CAM stock and sets Fusion Part Position."
   },
-  "version": "0.5.0",
+  "version": "0.6.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
