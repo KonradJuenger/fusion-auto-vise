@@ -2,49 +2,69 @@
 
 Fusion add-in that fits a linked vise around CAM stock and uses Fusion's native **Setup > Part Position** for placement inside the machine model.
 
-## V0.8
+## V0.9
 
-V0.8 fixes the two failures exposed by the latest test.
+V0.9 is primarily a diagnostic and determinism release. The latest tests show that the jaw and orientation logic can succeed while the actual Setup model still sits somewhere else. The new version therefore validates the coordinate relationship between **CAM stock/WCS** and the actual **Setup model geometry** before placing the vise.
 
-### Slider jaw drive
+### Deep setup-frame validation
 
-`SliderJointMotion.slideValue` is an absolute joint position, not a delta. The previous version added the required gap correction to the current value. With the reference vise this produced a 2.887 mm opening instead of the required 51.887 mm.
+Auto Vise now logs the world/assembly bounding box of every object in `Setup.models` and compares it against four interpretations of `Setup.workCoordinateSystem`:
 
-V0.8 now drives the slider directly to the required geometric jaw gap, tries both signs for reversed slider orientation, and verifies the resulting gap before continuing. If a slider joint exists and cannot reach the requested gap, Auto Vise stops instead of falling back to a conflicting direct occurrence transform. The direct transform fallback is now reserved for vise masters without a slider joint.
+- WCS direct
+- WCS direct with translation divided by 10
+- WCS inverse
+- WCS inverse with translation divided by 10
 
-### Vise orientation
+The candidate whose resolved stock box best contains and centers on the actual Setup model is selected automatically. The chosen interpretation is written to `last_debug.txt`.
 
-The selected **Vise clamping direction** means the jaw opening/movement axis. V0.8 applies the vise transform after the jaw gap is solved, then verifies that the transformed clamp vector is parallel to the requested Setup X or Setup Y axis. A mismatch is now an explicit error rather than a silent visual failure.
+This is intentionally defensive. Autodesk documents CAM length database units as centimeters, but the current test data strongly suggests the WCS translation and the CAM stock/body geometry are not being interpreted in the same coordinate scale by the previous code. V0.9 validates against the real model instead of assuming the matrix convention.
 
-The latest screenshot appeared to show the vise still along X while Setup Y was selected because V0.7 aborted during jaw adjustment before the orientation transform was ever applied.
+The translucent debug stock is now drawn using this same resolved frame, so if the debug stock encloses the part, the vise placement uses exactly that frame too.
 
-### Code layout / hot reload
+### Repeat-run cleanup
 
-The add-in is split into:
+Before inserting a new linked vise, V0.9:
 
-- `AutoVise.py`, a small loader that reloads the implementation modules on every Run
-- `autovise_geometry.py`, vise geometry, jaw and orientation logic
-- `autovise_support.py`, settings, fixture, Part Position and debug helpers
-- `autovise_impl.py`, Fusion UI and command execution
+1. removes previous Auto Vise references from all Setup fixture collections,
+2. deletes all managed `AUTO_VISE` occurrences,
+3. processes Fusion events,
+4. verifies that no managed occurrence remains,
+5. inserts one fresh linked vise.
 
-This makes Fusion development reloads more reliable and future fixes easier to isolate.
+The deep log includes occurrence tokens and cleanup results. This is intended to remove the run-to-run instability caused by stale linked occurrences or fixture references.
 
-## Normal operation
+### Deterministic jaw drive
 
-1. Read evaluated CAM box stock.
-2. Verify that the Setup has a Table Attach Point.
-3. Insert the remembered linked vise master.
-4. Detect its fixed gripping face and native clamp axis.
-5. Drive the slider to the selected stock X/Y size and verify the measured jaw gap.
-6. Orient the vise so the jaw movement axis matches selected Setup X or Setup Y.
-7. Place the fixed jaw against the chosen stock side at the requested grip depth.
-8. Add the vise as a Setup fixture.
-9. Apply Fusion Part Position X/Y/Z offsets relative to the Table Attach Point.
-10. Remember settings and write `last_debug.txt` when debug is enabled.
+When a slider joint exists, V0.9 ignores its starting position and drives absolute `+target` and `-target` values. It then selects the result whose measured geometric jaw gap matches the required stock width/depth. The linked component's state from a previous run therefore should not affect the result.
+
+## Normal workflow
+
+1. Assign a machine and set **Setup > Part Position > Table Attach Point** once.
+2. Run Auto Vise.
+3. Choose Setup X or Setup Y as the jaw movement direction.
+4. Choose the fixed-jaw side and grip depth.
+5. Auto Vise opens the jaw to the stock size, resolves the actual local Setup frame, places the vise around the resolved stock, and adds it as a fixture.
+6. Part Position X/Y/Z offsets are then applied relative to Fusion's Table Attach Point.
+
+## Debugging
+
+Keep **Show local stock + write log** enabled while testing. The log now includes:
+
+- Setup model object types and world/assembly bounding boxes
+- raw WCS matrix
+- all frame candidates and their stock AABBs
+- center-distance and containment error for every frame candidate
+- chosen frame
+- stale fixture/occurrence cleanup
+- slider target and measured jaw gap
+- final vise transform and orientation
+- Part Position parameters before and after
+
+The most important sanity check is simple: the translucent stock box must surround the actual part before machine Part Position is considered.
 
 ## Important Part Position detail
 
-`job_positionXOffset`, `job_positionYOffset`, and `job_positionZOffset` are offsets from Fusion's **Table Attach Point**, not absolute machine coordinates. Select the machine table datum once in **Setup > Part Position > Table Attach Point**.
+`job_positionXOffset`, `job_positionYOffset`, and `job_positionZOffset` are offsets from Fusion's **Table Attach Point**, not absolute machine coordinates.
 
 ## Current limitations
 
@@ -52,5 +72,5 @@ This makes Fusion development reloads more reliable and future fixes easier to i
 - Vise master must contain child components named `fixed jaw` and `movable jaw`.
 - A slider joint is strongly preferred for the movable jaw.
 - The machining file and vise master must currently be in the same Fusion project for linked insertion.
-- Fusion's machine Table Attach Point still needs manual selection because the current API does not expose the machine-model geometry sufficiently for automatic selection.
+- Fusion's machine Table Attach Point still needs manual selection because the current API does not expose machine-model geometry sufficiently for automatic selection.
 - Vise master Z is assumed to be up.
