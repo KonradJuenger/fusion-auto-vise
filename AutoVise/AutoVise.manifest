@@ -4,9 +4,9 @@
   "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
   "author": "JÜNGERKÜHN",
   "description": {
-    "": "Positions CAM stock in a fixed machine-mounted vise."
+    "": "Fits a linked vise to CAM stock and sets Fusion Part Position."
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
