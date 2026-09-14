@@ -6,7 +6,7 @@
   "description": {
     "": "Places a linked vise from Fusion Manufacture setup stock."
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
