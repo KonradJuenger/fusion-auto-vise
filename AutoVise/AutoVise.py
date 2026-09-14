@@ -10,6 +10,7 @@ import autovise_geometry
 import autovise_support
 import autovise_impl
 import autovise_v09
+import autovise_v10
 
 
 def _reload():
@@ -18,6 +19,8 @@ def _reload():
     importlib.reload(autovise_impl)
     importlib.reload(autovise_v09)
     autovise_v09.apply_patches()
+    importlib.reload(autovise_v10)
+    autovise_v10.apply_patches()
 
 
 def run(context):
