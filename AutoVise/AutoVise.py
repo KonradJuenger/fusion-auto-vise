@@ -54,70 +54,14 @@ def _load_modules():
     try:
         _write_bootstrap('starting module load')
 
-        import autovise_geometry
-        import autovise_support
-        import autovise_parallels
-        import autovise_impl
-        import autovise_v09
-        import autovise_v11
-        import autovise_v13
-        import autovise_v14
-        import autovise_v15
-        import autovise_v16
-        import autovise_v17
-
-        _write_bootstrap('base imports succeeded')
-
-        importlib.reload(autovise_geometry)
-        _write_bootstrap('reloaded autovise_geometry')
-
-        importlib.reload(autovise_support)
-        _write_bootstrap('reloaded autovise_support')
-
-        importlib.reload(autovise_parallels)
-        _write_bootstrap('reloaded autovise_parallels')
-
-        importlib.reload(autovise_impl)
-        _write_bootstrap('reloaded autovise_impl')
-
-        importlib.reload(autovise_v09)
-        _write_bootstrap('reloaded autovise_v09')
-        autovise_v09.apply_patches()
-        _write_bootstrap('applied V0.9 frame/cleanup patches')
-
-        importlib.reload(autovise_v11)
-        _write_bootstrap('reloaded autovise_v11')
-        autovise_v11.apply_patches()
-        _write_bootstrap('applied V0.11 jaw/proxy patches')
-
-        importlib.reload(autovise_v13)
-        _write_bootstrap('reloaded autovise_v13')
-        autovise_v13.apply_patches()
-        _write_bootstrap('applied V0.13 parallel frame patches')
-
-        importlib.reload(autovise_v14)
-        _write_bootstrap('reloaded autovise_v14')
-        autovise_v14.apply_patches()
-        _write_bootstrap('applied V0.14 parallel centering patch')
-
-        importlib.reload(autovise_v15)
-        _write_bootstrap('reloaded autovise_v15')
-        autovise_v15.apply_patches()
-        _write_bootstrap('applied V0.15 measured orientation patch')
-
-        importlib.reload(autovise_v16)
-        _write_bootstrap('reloaded autovise_v16')
-        autovise_v16.apply_patches()
-        _write_bootstrap('applied V0.16 stable fixture-reference patch')
-
-        importlib.reload(autovise_v17)
-        _write_bootstrap('reloaded autovise_v17')
-        autovise_v17.apply_patches()
-        _write_bootstrap('applied V0.17 native script-generated parallel patch')
-
-        _loaded_impl = autovise_impl
-        _write_bootstrap('module load complete')
-        return autovise_impl
+        modules = ('autovise_geometry', 'autovise_support', 'autovise_rules',
+                   'autovise_model', 'autovise_roles', 'autovise_service', 'autovise_commands')
+        for name in modules:
+            module = importlib.import_module(name)
+            importlib.reload(module)
+        _loaded_impl = sys.modules['autovise_commands']
+        _write_bootstrap('V2 module load complete (no runtime patches)')
+        return _loaded_impl
 
     except Exception as exc:
         text = _write_bootstrap('MODULE LOAD FAILED', exc)
@@ -132,9 +76,9 @@ def run(context):
         if impl is None:
             return
 
-        _write_bootstrap('calling autovise_impl.run')
+        _write_bootstrap('calling autovise_commands.run')
         impl.run(context)
-        _write_bootstrap('autovise_impl.run returned successfully')
+        _write_bootstrap('autovise_commands.run returned successfully')
 
     except Exception as exc:
         text = _write_bootstrap('RUN FAILED', exc)
@@ -148,7 +92,7 @@ def stop(context):
         impl = _loaded_impl
         if impl is None:
             try:
-                import autovise_impl as impl
+                import autovise_commands as impl
             except Exception:
                 impl = None
 

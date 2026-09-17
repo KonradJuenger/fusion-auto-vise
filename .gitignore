@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+AutoVise/settings.json
+AutoVise/*debug.txt
+AutoVise/last_run.json
+baseline-v0.17.zip
+api-reference/
+tests/fusion-inspection.json
+.autovise-dev
+tests/fusion-plan.json
+tests/fusion-plan.paused.json
+tests/fusion-plan.last.json
