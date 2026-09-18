@@ -44,6 +44,17 @@ def same(a, b):
     return a == b
 
 
+def design_vise(design, entity):
+    """Resolve a selected CAM occurrence to its top-level design instance."""
+    occurrence = f.Occurrence.cast(entity)
+    if occurrence:
+        native = occurrence.nativeObject or occurrence
+        for candidate in items(design.rootComponent.occurrences):
+            if same(candidate, occurrence) or same(candidate, native):
+                return candidate
+    raise ValueError('Select the top-level vise instance; jaw components may be nested inside it.')
+
+
 def vector(v, scale=1):
     return c.Vector3D.create(v.x * scale, v.y * scale, v.z * scale)
 

@@ -38,48 +38,65 @@ def connect(event, handler, keep):
     keep.append(handler)
 
 
+def active_setup(cam):
+    setups = model.items(cam.setups)
+    active = [setup for setup in setups if setup.isActive]
+    if len(active) == 1:
+        return active[0]
+    if not active and len(setups) == 1:
+        return setups[0]
+    raise ValueError('Activate the intended setup in the Manufacture browser, then open Auto Vise.')
+
+
 class Session:
     def __init__(self, command):
         self.app, self.design, self.cam = products()
         self.command, self.inputs = command, command.commandInputs
         self.handlers, self.preview = [], None
         self.busy, self.valid = False, False
-        self.setups = model.items(self.cam.setups)
+        self.activated = False
+        self.source_file = None
+        command.setDialogInitialSize(540, 620)
+        self.target_setup = active_setup(self.cam)
         self.rows = service.library()
-        self.dropdown('setup', 'Setup', [f'{s.name} (ID {s.operationId})' for s in self.setups])
+        self.dropdown('vise_mode', 'Vise', ['Use existing vise', 'Insert new vise'])
         self.select('vise', 'Vise instance', ['Occurrences'])
-        self.inputs.addTextBoxCommandInput('master_status', 'Vise master',
-            'Roles are read from the vise master. Configure them once in the original vise file.', 3, True)
+        self.inputs.addBoolValueInput('choose_master', 'Choose vise file…', False, '', False)
+        self.inputs.addTextBoxCommandInput('source_name', '', 'Choose a configured vise master.', 2, True).isFullWidth = True
         self.dropdown('axis', 'Clamp direction', ['Setup X', 'Setup Y'])
         self.dropdown('side', 'Fixed jaw side', ['+ side', '- side'])
         self.dropdown('support', 'Stock support', ['Manual grip depth'] + [r['name'] for r in self.rows])
         self.value('grip', 'Manual grip depth', 4)
-        self.value('minimum', 'Your minimum grip requirement', 0)
-        self.inputs.addTextBoxCommandInput('rules_note', '',
-            'Minimum 0 means no shop requirement specified. Geometric fit does not establish holding force. '
-            'Manual grip requires a suitable physical support arrangement.', 3, True)
-        self.inputs.addBoolValueInput('fixture', 'Include workholding in CAM fixtures', True, '', True)
-        self.inputs.addBoolValueInput('preview', 'Show grip region preview', True, '', True)
-        machine = self.inputs.addGroupCommandInput('machine', 'Fusion Part Position (optional)')
-        machine.isExpanded = False
-        machine.children.addBoolValueInput('change_offsets', 'Change offsets from selected Fusion reference', True, '', False)
+        self.value('minimum', 'Minimum grip', 0)
+        self.item('minimum').tooltip = 'Use 0 if no minimum grip is required.'
+        feedback = self.inputs.addTextBoxCommandInput('feedback', '', 'Select a vise to evaluate the fit.', 4, True)
+        feedback.isFullWidth = True
+        advanced = self.inputs.addGroupCommandInput('advanced', 'Advanced settings')
+        advanced.isExpanded = False
+        advanced.children.addBoolValueInput('fixture', 'Include in CAM fixtures', True, '', True)
+        advanced.children.addBoolValueInput('preview', 'Show grip preview', True, '', True)
+        self.dropdown('wcs_units', 'CAM origin units', ['mm', 'cm'], advanced.children)
+        # Fusion does not support folding a group nested inside another group.
+        advanced.children.addBoolValueInput('change_offsets', 'Change Part Position offsets', True, '', False)
         for key in ('x', 'y', 'z'):
-            self.value('offset_' + key, key.upper() + ' offset from selected reference', 0, machine.children)
-        self.dropdown('wcs_units', 'CAM WCS origin units', ['mm', 'cm'])
-        self.inputs.addTextBoxCommandInput('feedback', 'Fit feedback', '', 7, True)
-        self.inputs.addTextBoxCommandInput('candidates', 'Parallel evaluation', '', 8, True)
-        self.load_setup()
+            self.value('offset_' + key, key.upper() + ' offset from selected reference', 0, advanced.children)
+        details = self.inputs.addGroupCommandInput('details', 'Parallel comparison and master details')
+        details.isExpanded = False
+        status = details.children.addTextBoxCommandInput('master_status', '', '', 2, True)
+        status.isFullWidth = True
+        candidates = details.children.addTextBoxCommandInput('candidates', '', '', 10, True)
+        candidates.isFullWidth = True
+        connect(command.activate, Activated(self), self.handlers)
         connect(command.inputChanged, Changed(self), self.handlers)
         connect(command.validateInputs, Validate(self), self.handlers)
         connect(command.execute, Execute(self), self.handlers)
         connect(command.destroy, Destroy(self), self.handlers)
-        self.refresh()
 
     def item(self, key):
         return self.inputs.itemById(key)
 
-    def dropdown(self, key, label, names):
-        drop = self.inputs.addDropDownCommandInput(key, label, c.DropDownStyles.TextListDropDownStyle)
+    def dropdown(self, key, label, names, inputs=None):
+        drop = (inputs or self.inputs).addDropDownCommandInput(key, label, c.DropDownStyles.TextListDropDownStyle)
         for index, name in enumerate(names):
             drop.listItems.add(name, index == 0, '')
         return drop
@@ -98,6 +115,9 @@ class Session:
         item = self.item(key)
         return item.selection(0).entity if item.selectionCount else None
 
+    def inserting(self):
+        return self.item('vise_mode').selectedItem.index == 1
+
     def choose(self, key, name):
         for item in model.items(self.item(key).listItems):
             if item.name == name:
@@ -105,7 +125,7 @@ class Session:
                 return
 
     def setup(self):
-        return self.setups[self.item('setup').selectedItem.index]
+        return self.target_setup
 
     def options(self):
         return dict(axis=self.item('axis').selectedItem.name[-1],
@@ -138,8 +158,14 @@ class Session:
             self.item('vise').clearSelection()
             self.item('master_status').text = 'Select a vise with configured master roles.'
             vise = service.configured_vise(self.design, setup)
+            self.choose('vise_mode', 'Insert new vise' if not self.design.rootComponent.occurrences.count else 'Use existing vise')
+            self.item('vise_mode').isEnabled = vise is None
             if vise:
-                self.item('vise').addSelection(vise)
+                # Manufacture selections use the CAM assembly context.
+                root = self.cam.designRootOccurrence
+                selection = vise.createForAssemblyContext(root) if root else vise
+                if not self.item('vise').addSelection(selection):
+                    raise ValueError('Could not restore the saved vise selection. Select its top-level instance.')
                 self.load_vise(vise)
         except Exception as exc:
             self.load_error = str(exc)
@@ -149,6 +175,7 @@ class Session:
     def load_vise(self, vise):
         self.load_error = ''
         try:
+            vise = model.design_vise(self.design, vise)
             roles.resolve(vise.component, vise)
             self.item('master_status').text = 'All four master roles are present and valid.'
         except ValueError as exc:
@@ -158,9 +185,8 @@ class Session:
     def profile(self):
         vise = self.selected('vise')
         if not vise:
-            raise ValueError(self.load_error or 'Select an existing vise instance. For a new vise, Cancel and use Insert Vise first.')
-        if vise.assemblyContext:
-            raise ValueError('Select the top-level vise instance; jaw components may be nested inside it.')
+            raise ValueError(self.load_error or 'Select a vise instance, or choose Insert new vise.')
+        vise = model.design_vise(self.design, vise)
         owner = model.read(vise, 'setup_id')
         if owner is not None and owner != self.setup().operationId:
             raise ValueError('That vise belongs to another setup. Use a separate instance.')
@@ -197,10 +223,31 @@ class Session:
         self.busy, self.valid = True, False
         try:
             self.clear_preview()
+            inserting = self.inserting()
+            self.item('vise').isVisible = not inserting
+            self.item('choose_master').isVisible = inserting
+            self.item('source_name').isVisible = inserting
             self.item('grip').isVisible = self.parallel() is None
             for key in ('x', 'y', 'z'):
                 self.item('offset_' + key).isEnabled = self.item('change_offsets').value
+            if inserting:
+                if service.configured_vise(self.design, self.setup()):
+                    raise ValueError('This setup already has a vise. Edit its existing instance.')
+                if not self.source_file:
+                    raise ValueError('Choose the configured vise file to insert.')
+                stock = stock_api._stock(self.setup())
+                options = self.options()
+                service.frame(self.setup(), stock, options['wcs_units'])
+                service.machine_guard(self.setup(), options['change_offsets'])
+                if options['minimum_mm'] < 0 or options['grip_mm'] < 0:
+                    raise ValueError('Grip values cannot be negative.')
+                self.item('feedback').text = 'OK inserts and fits the vise. Master roles and grip are checked during insertion; an invalid fit cancels the operation.'
+                self.item('master_status').text = 'Master roles will be checked on insertion.'
+                self.item('candidates').text = ''
+                self.valid = True
+                return
             profile = self.profile()
+            self.item('master_status').text = 'All four master roles are present and valid.'
             stock = stock_api._stock(self.setup())
             options = self.options()
             target_frame = service.frame(self.setup(), stock, options['wcs_units'])
@@ -211,11 +258,9 @@ class Session:
                 lines.append(f'{row["name"]}: ' + ('fits' if candidate.valid else '; '.join(candidate.reasons)) +
                              f' | grip {candidate.grip:.2f}, protrusion {candidate.protrusion:.2f} mm')
             self.item('candidates').text = '\n'.join(lines)
-            maximum = profile.opening_limits_mm()[1]
-            limit = f'{maximum:.2f} mm' if maximum is not None else 'unspecified (no calibrated upper opening limit)'
-            feedback = (f'Grip: {result.grip:.2f} mm\nStock above jaws: {result.protrusion:.2f} mm\n'
-                        f'Required opening: {result.opening:.2f} mm\nMaximum opening: {limit}\n'
-                        + ('Fits the selected geometric requirements.' if result.valid else '\n'.join(result.reasons)))
+            feedback = (f'Opening {result.opening:.2f} mm | Grip {result.grip:.2f} mm\n'
+                        f'Stock above jaws {result.protrusion:.2f} mm\n'
+                        + ('Ready to apply.' if result.valid else '\n'.join(result.reasons)))
             service.machine_guard(self.setup(), options['change_offsets'])
             self.item('feedback').text = feedback
             self.valid = result.valid
@@ -223,9 +268,22 @@ class Session:
                 self.show_preview(target_frame, stock, result)
         except Exception as exc:
             self.item('feedback').text = str(exc)
-            self.item('candidates').text = 'Configure valid master roles to evaluate supports.'
+            self.item('candidates').text = ''
         finally:
             self.busy = False
+
+
+class Activated(c.CommandEventHandler):
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    def notify(self, args):
+        s = self.session
+        if not s.activated:
+            s.activated = True
+            s.load_setup()
+        s.refresh()
 
 
 class Changed(c.InputChangedEventHandler):
@@ -235,11 +293,20 @@ class Changed(c.InputChangedEventHandler):
 
     def notify(self, args):
         s = self.session
-        if s.busy:
+        if s.busy or not s.activated:
             return
         try:
             if args.input.id == 'setup':
                 s.load_setup()
+            elif args.input.id == 'choose_master':
+                s.busy = True
+                try:
+                    data_file, _ = defaults._master(s.app.activeDocument, True)
+                    if data_file:
+                        s.source_file = data_file
+                        s.item('source_name').text = data_file.name
+                finally:
+                    s.busy = False
             elif args.input.id == 'vise':
                 s.busy = True
                 try:
@@ -271,7 +338,19 @@ class Execute(c.CommandEventHandler):
         s = self.session
         try:
             s.clear_preview()
-            service.apply(s.design, s.cam, s.setup(), s.profile(), s.options(), s.parallel())
+            if s.inserting():
+                if service.configured_vise(s.design, s.setup()):
+                    raise ValueError('This setup already has a vise. Edit its existing instance.')
+                if not s.source_file:
+                    raise ValueError('Choose a vise master first.')
+                vise = s.design.rootComponent.occurrences.addByInsert(s.source_file, c.Matrix3D.create(), True)
+                if not vise:
+                    raise ValueError('Fusion could not insert the vise.')
+                model.write(vise, 'source_file', s.source_file.id)
+                profile = roles.profile(vise)
+            else:
+                profile = s.profile()
+            service.apply(s.design, s.cam, s.setup(), profile, s.options(), s.parallel())
         except Exception as exc:
             args.executeFailed = True
             args.executeFailedMessage = str(exc)
@@ -298,38 +377,6 @@ class Created(c.CommandCreatedEventHandler):
             c.Application.get().userInterface.messageBox(traceback.format_exc(), 'Auto Vise V2')
 
 
-class InsertExecute(c.CommandEventHandler):
-    def __init__(self, data_file):
-        super().__init__()
-        self.data_file = data_file
-
-    def notify(self, args):
-        try:
-            app, design, _ = products()
-            vise = design.rootComponent.occurrences.addByInsert(self.data_file, c.Matrix3D.create(), True)
-            if not vise:
-                raise ValueError('Fusion could not insert the linked vise.')
-            model.write(vise, 'source_file', self.data_file.id)
-            app.userInterface.messageBox('Vise inserted. Open Auto Vise V2, select this instance. Its roles are read from the configured master.', 'Auto Vise V2')
-        except Exception as exc:
-            args.executeFailed = True
-            args.executeFailedMessage = str(exc)
-
-
-class InsertCreated(c.CommandCreatedEventHandler):
-    def notify(self, args):
-        try:
-            app, _, _ = products()
-            data_file, _ = defaults._master(app.activeDocument, False)
-            if not data_file:
-                return
-            args.command.commandInputs.addTextBoxCommandInput('insert_info', '',
-                f'Insert {data_file.name} as a new independent vise instance. Existing vises are preserved.', 3, True)
-            connect(args.command.execute, InsertExecute(data_file), _handlers)
-        except Exception as exc:
-            c.Application.get().userInterface.messageBox(str(exc), 'Auto Vise V2')
-
-
 class MasterSession:
     def __init__(self, command):
         self.command = command
@@ -342,21 +389,37 @@ class MasterSession:
         self.inputs.addTextBoxCommandInput('master_help', '',
             'Select the three faces and slider joint in the original vise file. OK stores their roles; '
             'then save the master and update linked instances. Cancel makes no changes.', 4, True)
-        for key, label in roles.ROLES.items():
+        labels = {'fixed': 'Fixed jaw gripping face', 'moving': 'Moving jaw gripping face',
+                  'seat': 'Parallel support face', 'joint': 'Jaw slider joint'}
+        for key, label in labels.items():
             selection = self.inputs.addSelectionInput(key, label, 'Select ' + label)
             selection.addSelectionFilter('Joints' if key == 'joint' else 'PlanarFaces')
             selection.setSelectionLimits(1, 1)
-        try:
-            selected, _ = roles.resolve(self.design.rootComponent)
-            for key, entity in selected.items():
-                self.inputs.itemById(key).addSelection(entity)
-        except ValueError:
-            pass  # An unconfigured or changed master needs explicit selections.
+        self.activated = False
+        connect(command.activate, MasterActivated(self), self.handlers)
         connect(command.execute, MasterExecute(self), self.handlers)
         connect(command.destroy, Destroy(self), self.handlers)
 
     def clear_preview(self):
         pass
+
+
+class MasterActivated(c.CommandEventHandler):
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    def notify(self, args):
+        s = self.session
+        if s.activated:
+            return
+        s.activated = True
+        try:
+            selected, _ = roles.resolve(s.design.rootComponent)
+            for key, entity in selected.items():
+                s.inputs.itemById(key).addSelection(entity)
+        except ValueError:
+            pass
 
 
 class MasterExecute(c.CommandEventHandler):
@@ -426,7 +489,7 @@ def run(context):
     stop(context)
     ui = c.Application.get().userInterface
     panel = ui.workspaces.itemById('CAMEnvironment').toolbarPanels.add(PANEL_ID, 'Auto Vise')
-    definitions = [(CMD_ID, 'Auto Vise V2', Created()), (INSERT_ID, 'Insert Vise', InsertCreated())]
+    definitions = [(CMD_ID, 'Auto Vise', Created())]
     if os.path.isfile(os.path.join(os.path.dirname(__file__), '..', '.autovise-dev')):
         definitions.append((DEV_ID, 'Auto Vise development check', DevelopmentCreated()))
     for key, name, handler in definitions:
@@ -434,12 +497,11 @@ def run(context):
             os.path.join(os.path.dirname(__file__), 'Resources', 'AutoVise'))
         connect(definition.commandCreated, handler, _handlers)
         control = panel.controls.addCommand(definition)
-        control.isPromoted = True
+        control.isPromoted = key == CMD_ID
 
     design_ws = ui.workspaces.itemById('FusionSolidEnvironment')
     master_panel = design_ws.toolbarPanels.add(MASTER_PANEL_ID, 'Auto Vise Master')
-    definition = ui.commandDefinitions.addButtonDefinition(MASTER_ID, 'Configure Vise Master',
+    definition = ui.commandDefinitions.addButtonDefinition(MASTER_ID, 'Setup Vise',
         'Assign the four Auto Vise roles once in the original vise file.')
     connect(definition.commandCreated, MasterCreated(), _handlers)
     master_panel.controls.addCommand(definition).isPromoted = True
-

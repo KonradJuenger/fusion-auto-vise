@@ -27,6 +27,17 @@ def setup_config(setup):
     return m.read(setup, 'configuration', {})
 
 
+def fixture_uses(entity, occurrence):
+    """CAM proxies include a manufacturing wrapper above the design assembly."""
+    current = f.Occurrence.cast(entity) or getattr(entity, 'assemblyContext', None)
+    target = occurrence.nativeObject or occurrence
+    while current:
+        if m.same(current.nativeObject or current, target):
+            return True
+        current = current.assemblyContext
+    return False
+
+
 def configured_vise(design, setup):
     config = setup_config(setup)
     if not config:
@@ -65,6 +76,10 @@ def frame(setup, stock, origin_units='mm'):
 
 
 def machine_guard(setup, change_offsets):
+    # Fitting is defined in setup coordinates. Machine attachment is only a
+    # prerequisite for the optional action that writes Part Position offsets.
+    if not change_offsets:
+        return False
     attach, _ = defaults._table_attach_status(setup)
     if change_offsets and attach is not True:
         raise ValueError('Select Fusion’s Table Attach Point before changing Part Position offsets.')
@@ -106,28 +121,58 @@ def parallel_boxes(profile, parallel):
         d['across'], d['clamp'], length, t, h)) for shift in (t / 2, d['gap'] - t / 2)]
 
 
-def persist_parallels(design, profile, parallel, instance):
-    occ = design.rootComponent.occurrences.addNewComponent(c.Matrix3D.create())
-    occ.component.name = 'Auto Vise parallels'
-    m.write(occ, 'instance', instance)
+def persist_parallels(design, profile, parallel, instance, existing=None):
+    # Build the requested world geometry before opening a timeline feature.
+    boxes = parallel_boxes(profile, parallel)
+    if any(box is None for box in boxes):
+        raise ValueError('Could not construct parallel geometry.')
+    occ = existing
+    if occ:
+        if m.read(occ, 'instance') != instance:
+            raise ValueError('Saved parallel ownership does not match this setup.')
+        if design.designType != f.DesignTypes.ParametricDesignType:
+            raise ValueError('Updating existing parallels requires a parametric design.')
+        if occ.component.features.baseFeatures.count != 1 or occ.component.bRepBodies.count != 2:
+            raise ValueError('Saved parallel geometry was edited. Restore its two-body base feature before fitting.')
+        inverse = occ.transform2.copy()
+        if not inverse.invert():
+            raise ValueError('Could not resolve the parallel component position.')
+        manager = f.TemporaryBRepManager.get()
+        for box in boxes:
+            if not manager.transform(box, inverse):
+                raise ValueError('Could not transform parallel geometry.')
+    else:
+        occ = design.rootComponent.occurrences.addNewComponent(c.Matrix3D.create())
+        occ.component.name = 'Auto Vise parallels'
+        m.write(occ, 'instance', instance)
     component = occ.component
     feature = None
     if design.designType == f.DesignTypes.ParametricDesignType:
-        feature = component.features.baseFeatures.add()
+        feature = component.features.baseFeatures.item(0) if existing else component.features.baseFeatures.add()
         if not feature.startEdit():
             raise ValueError('Could not start parallel base feature.')
     try:
-        for box in parallel_boxes(profile, parallel):
-            if box is None or not component.bRepBodies.add(box, feature):
-                raise ValueError('Could not create persistent parallel bodies.')
+        if existing:
+            sources = m.items(feature.bodies)
+            if len(sources) != 2:
+                raise ValueError('Expected two editable parallel source bodies.')
+            for source, box in zip(sources, boxes):
+                if not feature.updateBody(source, box):
+                    raise ValueError('Could not update the existing parallel body.')
+        else:
+            for box in boxes:
+                if not component.bRepBodies.add(box, feature):
+                    raise ValueError('Could not create persistent parallel bodies.')
     finally:
         if feature:
-            feature.finishEdit()
+            if not feature.finishEdit():
+                raise ValueError('Could not finish the parallel base feature.')
     bodies = m.items(component.bRepBodies)
     if len(bodies) != 2:
         raise ValueError('Expected exactly two persistent parallel bodies.')
     for body, name in zip(bodies, ('AUTO_PARALLEL_FIXED', 'AUTO_PARALLEL_MOVING')):
         body.name = name
+    occ.isLightBulbOn = True
     return occ
 
 
@@ -155,7 +200,7 @@ def apply(design, cam, setup, profile, options, parallel):
             raise ValueError('This vise is owned by another setup. Insert a separate instance.')
         # Also protect manually shared or legacy fixture references.
         for other in m.items(cam.setups):
-            if other.operationId != setup.operationId and any(m.same(m.root_occurrence(x), vise) for x in m.items(other.fixtures)):
+            if other.operationId != setup.operationId and any(fixture_uses(x, vise) for x in m.items(other.fixtures)):
                 raise ValueError('This vise is used as a fixture in another setup. Insert a separate instance.')
         stock = stock_api._stock(setup)
         target_frame = frame(setup, stock, options['wcs_units'])
@@ -202,22 +247,28 @@ def apply(design, cam, setup, profile, options, parallel):
         old_parallel = m.resolve(design, old_config['parallels']) if old_config.get('parallels') else None
         if old_parallel and m.read(old_parallel, 'instance') != instance:
             raise ValueError('Saved parallel ownership does not match this setup.')
-        new_parallel = persist_parallels(design, profile, parallel, instance) if parallel else None
+        if old_parallel:
+            for other in m.items(cam.setups):
+                if other.operationId != setup.operationId and any(fixture_uses(x, old_parallel) for x in m.items(other.fixtures)):
+                    raise ValueError('These parallels are used by another setup. Use separate fixture instances.')
+        new_parallel = persist_parallels(design, profile, parallel, instance, old_parallel) if parallel else None
         fixtures = c.ObjectCollection.create()
         for entity in m.items(setup.fixtures):
-            if old_parallel and m.same(m.root_occurrence(entity), old_parallel):
+            if old_parallel and fixture_uses(entity, old_parallel):
                 continue
-            if not m.same(entity, vise):
+            if not fixture_uses(entity, vise):
                 fixtures.add(entity)
-        if options['fixture'] or any(m.same(x, vise) for x in m.items(setup.fixtures)):
+        if options['fixture'] or any(fixture_uses(x, vise) for x in m.items(setup.fixtures)):
             fixtures.add(vise)
             if new_parallel:
                 fixtures.add(new_parallel)
         if fixtures.count:
             setup.fixtureEnabled = True
-            setup.fixtures = fixtures
-        if old_parallel:
-            old_parallel.deleteMe()
+        setup.fixtures = fixtures
+        # Retain the owned component when switching to manual support. Deleting
+        # it can invalidate CAM references; it can be reused on the next fit.
+        if old_parallel and not parallel:
+            old_parallel.isLightBulbOn = False
         if options['change_offsets']:
             defaults._set_part_position(setup, options['offsets_mm'])
         # Re-read after all geometry and CAM changes, which can recompute the
@@ -232,7 +283,7 @@ def apply(design, cam, setup, profile, options, parallel):
         m.write(vise, 'setup_id', setup.operationId)
         m.write(vise, 'profile', profile.serialize())
         config = dict(options, instance=instance, vise=vise.entityToken,
-                      parallels=new_parallel.entityToken if new_parallel else None,
+                      parallels=(new_parallel or old_parallel).entityToken if (new_parallel or old_parallel) else None,
                       support=parallel['name'] if parallel else 'Manual grip depth')
         # Offsets are a deliberate action, never automatically repeated on reopen.
         config['change_offsets'] = False

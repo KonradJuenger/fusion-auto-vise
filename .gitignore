@@ -10,3 +10,9 @@ tests/fusion-inspection.json
 tests/fusion-plan.json
 tests/fusion-plan.paused.json
 tests/fusion-plan.last.json
+
+.local-archive/
+dist/
+.vscode/
+AutoVise/.vscode/
+tests/fusion-*.json
