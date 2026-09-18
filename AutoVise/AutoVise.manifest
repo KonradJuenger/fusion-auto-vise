@@ -2,7 +2,7 @@
   "autodeskProduct": "Fusion360",
   "type": "addin",
   "id": "7cc2cbde-14c8-4cfe-a673-18c8e832a648",
-  "author": "JÜNGERKÜHN",
+  "author": "Konrad Jünger",
   "description": {"": "Edit setup-scoped vises with geometric grip validation and persistent parallels."},
   "version": "2.0.0",
   "runOnStartup": false,
